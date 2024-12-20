@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: SortPhotos",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/sortphotos.py",
+            "args": [
+                "-c",
+                "-r",
+                "-t",
+                "input",
+                "output",
+                "--sort",
+                "%Y_%m_%d CITY"
+            ],
+            "console": "integratedTerminal"
+        }
+    ]
+}

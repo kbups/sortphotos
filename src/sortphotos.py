@@ -23,6 +23,10 @@ from datetime import datetime, timedelta
 import re
 import locale
 
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
+from functools import lru_cache
+
 
 # Setting locale to the 'local' value
 locale.setlocale(locale.LC_ALL, '')
@@ -110,7 +114,81 @@ def parse_date_exif(date_string):
 
     return date
 
+def get_gps_location(data):
+    res = None
+    for key in ['Latitude', 'Longitude']:
+        if f'EXIF:GPS{key}' in data and f'EXIF:GPS{key}Ref' in data:
+            e = data[f'EXIF:GPS{key}']
+            ref = data[f'EXIF:GPS{key}Ref']
 
+            # Remove quotes and split the string
+            parts = e.replace('"', '').replace("'", '').replace('deg', '').split()
+            
+            # Convert to float
+            degrees = float(parts[0])
+            minutes = float(parts[1])
+            seconds = float(parts[2])
+
+            # degrees = e[0][0] / e[0][1]
+            # minutes = e[1][0] / e[1][1]
+            # seconds = e[2][0] / e[2][1]
+            
+            coordinate = degrees + minutes / 60.0 + seconds / 3600.0
+            
+            if ref[0] in ['S', 'W']:
+                coordinate = -coordinate
+            if res == None:
+                res = {}
+            res[key] = coordinate
+    
+    return res
+
+import certifi
+import ssl
+import geopy.geocoders
+
+@lru_cache(maxsize=128)
+def get_city_from_coordinates(latitude, longitude):
+    """
+    Get city name from GPS coordinates using Nominatim
+    
+    Args:
+        latitude (float): Latitude in decimal degrees
+        longitude (float): Longitude in decimal degrees
+    
+    Returns:
+        dict: Location information including city, state, country
+    """
+    try:
+        ctx = ssl._create_unverified_context(cafile=certifi.where())
+        geopy.geocoders.options.default_ssl_context = ctx
+
+        # Initialize Nominatim geocoder with your app name
+        geolocator = Nominatim(
+            user_agent="sort_photos_app"
+        )
+        
+        # Get location data
+        location = geolocator.reverse((latitude, longitude), language='en')
+        
+        if location and location.raw.get('address'):
+            address = location.raw['address']
+            
+            return {
+                'city': address.get('city') or address.get('town') or address.get('village') or address.get('suburb'),
+                'state': address.get('state'),
+                'country': address.get('country'),
+                'raw_address': location.address
+            }
+            
+        return None
+        
+    except (GeocoderTimedOut, GeocoderUnavailable) as e:
+        print(f"Geocoding error: {str(e)}")
+        return None
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return None
 
 def get_oldest_timestamp(data, additional_groups_to_ignore, additional_tags_to_ignore, print_all_tags=False):
     """data as dictionary from json.  Should contain only time stamps except SourceFile"""
@@ -277,6 +355,7 @@ def sortPhotos(src_dir, dest_dir, sort_format, rename_format, recursive=False,
 
     # setup arguments to exiftool
     args = ['-j', '-a', '-G']
+    args += ['-gps:all', '-Orientation#']
 
     # setup tags to ignore
     if use_only_tags is not None:
@@ -310,6 +389,8 @@ def sortPhotos(src_dir, dest_dir, sort_format, rename_format, recursive=False,
     num_files = len(metadata)
     print()
 
+    os.sys
+
     if test:
         test_file_dict = {}
 
@@ -318,6 +399,13 @@ def sortPhotos(src_dir, dest_dir, sort_format, rename_format, recursive=False,
 
         # extract timestamp date for photo
         src_file, date, keys = get_oldest_timestamp(data, additional_groups_to_ignore, additional_tags_to_ignore)
+
+        # extract gps coordinates from photo
+        gps_location = get_gps_location(data)
+        city_info = None
+        if gps_location:
+            # Then get city information
+            city_info = get_city_from_coordinates(gps_location["Latitude"], gps_location["Longitude"])
 
         # fixes further errors when using unicode characters like "\u20AC"
         src_file.encode('utf-8')
@@ -357,9 +445,13 @@ def sortPhotos(src_dir, dest_dir, sort_format, rename_format, recursive=False,
         # early morning photos can be grouped with previous day (depending on user setting)
         date = check_for_early_morning_photos(date, day_begins)
 
-
         # create folder structure
         dir_structure = date.strftime(sort_format)
+
+        # set gps information if available
+        if dir_structure.index('CITY') != -1:
+            dir_structure = dir_structure.replace('CITY', city_info['city'] if city_info != None else "UNKNOWN_CITY")
+
         dirs = dir_structure.split('/')
         dest_file = dest_dir
         for thedir in dirs:
@@ -423,7 +515,6 @@ def sortPhotos(src_dir, dest_dir, sort_format, rename_format, recursive=False,
             test_file_dict[dest_file] = src_file
 
         else:
-
             if fileIsIdentical:
                 continue  # ignore identical files
             else:
@@ -431,8 +522,6 @@ def sortPhotos(src_dir, dest_dir, sort_format, rename_format, recursive=False,
                     shutil.copy2(src_file, dest_file)
                 else:
                     shutil.move(src_file, dest_file)
-
-
 
         if verbose:
             print()
